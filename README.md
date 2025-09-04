@@ -48,7 +48,7 @@ ragbot2.0/
 
 ## 🎓 How RAG Works
 
-Retrieval-Augmented Generation (RAG) enhances LLMs by injecting external knowledge. Instead of relying solely on pre-trained data, the model retrieves relevant information from a vector database (like ChromaDB) and uses it to generate accurate, context-aware responses.
+Retrieval-Augmented Generation (RAG) enhances LLMs by injecting external knowledge. Instead of relying solely on pre-trained data, the model retrieves relevant information from a vector database (like Pinecone vectorstore) and uses it to generate accurate, context-aware responses.
 
 ---
 
