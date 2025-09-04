@@ -1,4 +1,4 @@
-# MediBot -Modular RAG PDF Chatbot with FastAPI, PineconeDB & Streamlit
+# MediBot -Modular RAG PDF Chatbot with FastAPI, Pinecone & Streamlit
 
 
 
