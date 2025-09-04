@@ -1,4 +1,4 @@
-# 🧠 Modular RAG PDF Chatbot with FastAPI, ChromaDB & Streamlit
+# MediBot -Modular RAG PDF Chatbot with FastAPI, PineconeDB & Streamlit
 
 
 
@@ -63,8 +63,7 @@ Retrieval-Augmented Generation (RAG) enhances LLMs by injecting external knowled
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/snsupratim/RagBot-2.0.git
-cd RagBot-2.0
+git clone https://github.com/Anurada23/MediBot--RAG-PDF-llama-Chatbot-with-FastAPI-ChromaDB-Streamlit-Pinecone-Groq.git
 ```
 
 ### 2. Setup the Backend (FastAPI)
@@ -101,27 +100,11 @@ Testable via Postman or directly from the Streamlit frontend.
 
 ---
 
-## 🚧 TODO
 
-- [ ] Add authentication for endpoints
-- [ ] Dockerize the project
-- [ ] Add support for more file types
-
----
-
-## 🌟 Credits
-
-- [LangChain](https://www.langchain.com/)
-- [ChromaDB](https://www.trychroma.com/)
-- [Groq](https://groq.com/)
-- [Streamlit](https://streamlit.io/)
-
----
 
 ## ✉️ Contact
 
-For questions or suggestions, open an issue or contact at [snsupratim@gmail.com]
+For questions or suggestions, open an issue or contact at [anuradasenaratne23@gmail.com]
 
 ---
 
-> Happy Building RAGbots! 🚀
