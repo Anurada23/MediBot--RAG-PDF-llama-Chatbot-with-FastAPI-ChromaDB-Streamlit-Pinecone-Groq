@@ -11,7 +11,7 @@ This project is a modular **Retrieval-Augmented Generation (RAG)** application t
 ## 📂 Project Structure
 
 ```
-ragbot2.0/
+MediBot/
 ├── client/         # Streamlit Frontend
 │   |──components/
 |   |  |──chatUI.py
