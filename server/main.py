@@ -7,6 +7,9 @@ from modules.llm import get_llm_chain
 from modules.query_handlers import query_chain
 from logger import logger
 import os
+from pydantic import BaseModel, Field, validator
+from typing import List, Optional
+from fastapi.responses import JSONResponse
 
 app=FastAPI(title="RagBot2.0")
 
@@ -63,16 +66,48 @@ async def upload_pdfs(files:List[UploadFile]=File(...)):
 #         return JSONResponse(status_code=500,content={"error":str(e)})
 
 
-@app.post("/ask/")
+
+class AskRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=1000, description="The question to ask")
+
+    @validator("question")
+    def question_must_not_be_blank(cls, v):
+        if not v.strip():
+            raise ValueError("Question must not be blank or whitespace.")
+        return v.strip()
+
+
+class SourceItem(BaseModel):
+    source: str = Field(..., description="Source document identifier")
+
+
+class AskResponse(BaseModel):
+    response: str = Field(..., description="The LLM-generated answer")
+    sources: List[SourceItem] = Field(default_factory=list, description="Sources used to answer")
+
+
+class ErrorResponse(BaseModel):
+    error: str = Field(..., description="Error message")
+
+
+# ── Endpoint ─────────────────────────────────────────────────────────────────
+
+@app.post("/ask/", response_model=AskResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
 async def ask_question(question: str = Form(...)):
+    # ── Validate Request ──────────────────────────────────────────────────────
     try:
-        logger.info(f"user query: {question}")
+        request_data = AskRequest(question=question)
+    except ValueError as ve:
+        return JSONResponse(status_code=400, content=ErrorResponse(error=str(ve)).dict())
+
+    try:
+        logger.info(f"user query: {request_data.question}")
+
         from pinecone import Pinecone
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
         from langchain_core.documents import Document
         from langchain.schema import BaseRetriever
-        from typing import List, Optional
-        from pydantic import Field
+        from typing import List
         from modules.llm import get_llm_chain
         from modules.query_handlers import query_chain
         import os
@@ -83,25 +118,24 @@ async def ask_question(question: str = Form(...)):
         embed_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 
         # 2️⃣ Embed the question
-        embedded_query = embed_model.embed_query(question)
+        embedded_query = embed_model.embed_query(request_data.question)
 
         # 3️⃣ Query Pinecone
         res = index.query(vector=embedded_query, top_k=5, include_metadata=True)
         matches = res.get("matches", [])
 
         if not matches:
-            return {"response": "No relevant documents found.", "sources": []}
+            return AskResponse(response="No relevant documents found.", sources=[])
 
         # 4️⃣ Convert to LangChain Documents
         docs = [
-        Document(
-            page_content=match["metadata"].get("text", ""),
-            metadata={"source": match["metadata"].get("source", "unknown")}
-        )
-        for match in matches
-        if "text" in match["metadata"]
+            Document(
+                page_content=match["metadata"].get("text", ""),
+                metadata={"source": match["metadata"].get("source", "unknown")}
+            )
+            for match in matches
+            if "text" in match["metadata"]
         ]
-
 
         # 5️⃣ Simple Retriever
         class SimpleRetriever(BaseRetriever):
@@ -116,76 +150,24 @@ async def ask_question(question: str = Form(...)):
 
         # 6️⃣ LLM + RetrievalQA
         chain = get_llm_chain(retriever)
-        result = query_chain(chain, question)
+        raw_result = query_chain(chain, request_data.question)
+
+        # ── Validate Response ─────────────────────────────────────────────────
+        validated_result = AskResponse(
+            response=raw_result.get("response", ""),
+            sources=[SourceItem(source=s.get("source", "unknown")) for s in raw_result.get("sources", [])]
+        )
 
         logger.info("query successful")
-        return result
+        return validated_result
 
     except Exception as e:
         logger.exception("Error processing question")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(
+            status_code=500,
+            content=ErrorResponse(error=str(e)).dict()
+        )
 
-
-
-
-# @app.post("/ask/")
-# async def ask_question(question: str = Form(...)):
-#     try:
-#         logger.info(f"user query: {question}")
-
-#         from pinecone import Pinecone
-#         from langchain_google_genai import GoogleGenerativeAIEmbeddings
-#         from langchain_core.documents import Document
-#         from langchain.schema import BaseRetriever
-#         from typing import List, Optional
-#         from pydantic import Field
-#         from modules.llm import get_llm_chain
-#         from modules.query_handlers import query_chain
-#         import os
-
-#         # 1. Pinecone + Embedding setup
-#         pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
-#         index = pc.Index(os.environ["PINECONE_INDEX_NAME"])
-#         embed_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-
-#         # 2. Embed the question
-#         embedded_query = embed_model.embed_query(question)
-
-#         # 3. Query Pinecone
-#         res = index.query(vector=embedded_query, top_k=3, include_metadata=True)
-
-#         # 4. Convert to LangChain Documents
-#         docs = [
-#             Document(
-#                 page_content=match["metadata"].get("text", ""),
-#                 metadata=match["metadata"]
-#             ) for match in res["matches"]
-#         ]
-
-#         # 5. Pydantic-compliant retriever subclass
-#         class SimpleRetriever(BaseRetriever):
-#             tags: Optional[List[str]] = Field(default_factory=list)
-#             metadata: Optional[dict] = Field(default_factory=dict)
-
-#             def __init__(self, documents: List[Document]):
-#                 super().__init__()
-#                 self._docs = documents
-
-#             def _get_relevant_documents(self, query: str) -> List[Document]:
-#                 return self._docs
-
-#         retriever = SimpleRetriever(docs)
-
-#         # 6. LLM + RetrievalQA chain
-#         chain = get_llm_chain(retriever)
-#         result = query_chain(chain, question)
-
-#         logger.info("query successful")
-#         return result
-
-#     except Exception as e:
-#         logger.exception("Error processing question")
-#         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.get("/test")
