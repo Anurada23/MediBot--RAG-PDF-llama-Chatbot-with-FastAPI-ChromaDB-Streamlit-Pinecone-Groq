@@ -90,27 +90,127 @@ class ErrorResponse(BaseModel):
     error: str = Field(..., description="Error message")
 
 
-# ── Endpoint ─────────────────────────────────────────────────────────────────
+# ── Snowflake Connection Helper ─────────────────────────────────────────────
+
+def get_snowflake_connection():
+    """Create and return a Snowflake connection."""
+    try:
+        conn = snowflake.connector.connect(
+            user=os.getenv("SNOWFLAKE_USER"),
+            password=os.getenv("SNOWFLAKE_PASSWORD"),
+            account=os.getenv("SNOWFLAKE_ACCOUNT"),
+            warehouse="MEDI_ANALYTICS_WH",
+            database="MEDI_ANALYTICS",
+            schema="PUBLIC"
+        )
+        return conn
+    except Exception as e:
+        logger.error(f"Failed to connect to Snowflake: {str(e)}")
+        return None
+
+
+def log_to_snowflake(user_id: str, model_used: str, tokens_used: int, latency_ms: float, question: str = None):
+    """Log chat interaction to Snowflake."""
+    conn = None
+    try:
+        conn = get_snowflake_connection()
+        if conn:
+            cs = conn.cursor()
+            cs.execute("""
+                INSERT INTO chat_logs (user_id, model_used, tokens_used, latency_ms, timestamp, question)
+                VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP(), %s)
+            """, (user_id, model_used, tokens_used, latency_ms, question))
+            conn.commit()
+            cs.close()
+            logger.info("Successfully logged to Snowflake")
+    except Exception as e:
+        logger.error(f"Failed to log to Snowflake: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def update_doc_stats(doc_id: str, response_time: float):
+    """Update document statistics in Snowflake."""
+    conn = None
+    try:
+        conn = get_snowflake_connection()
+        if conn:
+            cs = conn.cursor()
+            # Check if doc exists
+            cs.execute("SELECT queries_count, avg_response_time FROM doc_stats WHERE doc_id = %s", (doc_id,))
+            result = cs.fetchone()
+            
+            if result:
+                # Update existing record
+                queries_count, avg_response_time = result
+                new_count = queries_count + 1
+                new_avg = ((avg_response_time * queries_count) + response_time) / new_count
+                
+                cs.execute("""
+                    UPDATE doc_stats 
+                    SET queries_count = %s, avg_response_time = %s 
+                    WHERE doc_id = %s
+                """, (new_count, new_avg, doc_id))
+            else:
+                # Insert new record
+                cs.execute("""
+                    INSERT INTO doc_stats (doc_id, queries_count, avg_response_time)
+                    VALUES (%s, %s, %s)
+                """, (doc_id, 1, response_time))
+            
+            conn.commit()
+            cs.close()
+    except Exception as e:
+        logger.error(f"Failed to update doc stats: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+
+# ── Middleware 
+
+@app.middleware("http")
+async def catch_exception_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        logger.exception("UNHANDLED EXCEPTION")
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+# ── Endpoints 
+
+@app.post("/upload_pdfs/")
+async def upload_pdfs(files: List[UploadFile] = File(...)):
+    try:
+        logger.info(f"Received {len(files)} files")
+        load_vectorstore(files)
+        logger.info("Documents added to vectorstore")
+        return {"message": "Files processed and vectorstore updated"}
+    except Exception as e:
+        logger.exception("Error during pdf upload")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 @app.post("/ask/", response_model=AskResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
-async def ask_question(question: str = Form(...)):
-    # ── Validate Request ──────────────────────────────────────────────────────
+async def ask_question(question: str = Form(...), user_id: str = Form(default="anonymous")):
+    start_time = time.time()
+    
+    # ── Validate Request 
     try:
         request_data = AskRequest(question=question)
     except ValueError as ve:
         return JSONResponse(status_code=400, content=ErrorResponse(error=str(ve)).dict())
 
     try:
-        logger.info(f"user query: {request_data.question}")
+        logger.info(f"User query: {request_data.question}")
 
         from pinecone import Pinecone
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
         from langchain_core.documents import Document
         from langchain.schema import BaseRetriever
         from typing import List
-        from modules.llm import get_llm_chain
-        from modules.query_handlers import query_chain
-        import os
 
         # 1️⃣ Pinecone + Embedding
         pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
@@ -152,13 +252,34 @@ async def ask_question(question: str = Form(...)):
         chain = get_llm_chain(retriever)
         raw_result = query_chain(chain, request_data.question)
 
-        # ── Validate Response ─────────────────────────────────────────────────
+        # Calculate latency
+        latency_ms = (time.time() - start_time) * 1000
+
+        # ── Validate Response 
         validated_result = AskResponse(
             response=raw_result.get("response", ""),
             sources=[SourceItem(source=s.get("source", "unknown")) for s in raw_result.get("sources", [])]
         )
 
-        logger.info("query successful")
+        # ── Log to Snowflake
+        # Estimate tokens (rough approximation: ~4 chars per token)
+        tokens_used = len(request_data.question + validated_result.response) // 4
+        model_used = os.getenv("LLM_MODEL_NAME", "gemini-pro")  # Adjust based on your LLM
+        
+        # Log chat interaction
+        log_to_snowflake(
+            user_id=user_id,
+            model_used=model_used,
+            tokens_used=tokens_used,
+            latency_ms=latency_ms,
+            question=request_data.question
+        )
+
+        # Update document statistics for each source
+        for source in validated_result.sources:
+            update_doc_stats(source.source, latency_ms)
+
+        logger.info("Query successful")
         return validated_result
 
     except Exception as e:
@@ -167,6 +288,91 @@ async def ask_question(question: str = Form(...)):
             status_code=500,
             content=ErrorResponse(error=str(e)).dict()
         )
+
+
+@app.get("/test")
+async def test():
+    return {"message": "Testing successful..."}
+
+
+@app.get("/analytics/chat_logs")
+async def get_chat_logs(limit: int = 100):
+    """Retrieve recent chat logs from Snowflake."""
+    conn = None
+    try:
+        conn = get_snowflake_connection()
+        if not conn:
+            return JSONResponse(status_code=500, content={"error": "Failed to connect to Snowflake"})
+        
+        cs = conn.cursor()
+        cs.execute(f"""
+            SELECT user_id, model_used, tokens_used, latency_ms, timestamp, question
+            FROM chat_logs
+            ORDER BY timestamp DESC
+            LIMIT {limit}
+        """)
+        
+        rows = cs.fetchall()
+        cs.close()
+        
+        logs = [
+            {
+                "user_id": row[0],
+                "model_used": row[1],
+                "tokens_used": row[2],
+                "latency_ms": row[3],
+                "timestamp": str(row[4]),
+                "question": row[5]
+            }
+            for row in rows
+        ]
+        
+        return {"logs": logs, "count": len(logs)}
+    
+    except Exception as e:
+        logger.exception("Error fetching chat logs")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.get("/analytics/doc_stats")
+async def get_doc_stats():
+    """Retrieve document statistics from Snowflake."""
+    conn = None
+    try:
+        conn = get_snowflake_connection()
+        if not conn:
+            return JSONResponse(status_code=500, content={"error": "Failed to connect to Snowflake"})
+        
+        cs = conn.cursor()
+        cs.execute("""
+            SELECT doc_id, queries_count, avg_response_time
+            FROM doc_stats
+            ORDER BY queries_count DESC
+        """)
+        
+        rows = cs.fetchall()
+        cs.close()
+        
+        stats = [
+            {
+                "doc_id": row[0],
+                "queries_count": row[1],
+                "avg_response_time": row[2]
+            }
+            for row in rows
+        ]
+        
+        return {"stats": stats, "count": len(stats)}
+    
+    except Exception as e:
+        logger.exception("Error fetching doc stats")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    finally:
+        if conn:
+            conn.close()
 
 
 
