@@ -95,6 +95,40 @@ Testable via Postman or directly from the Streamlit frontend.
 
 ---
 
+## 🌐 Snowflake Setup
+
+-- Step 1: Create Warehouse
+CREATE WAREHOUSE MEDI_ANALYTICS_WH 
+    WAREHOUSE_SIZE = 'XSMALL' 
+    AUTO_SUSPEND = 300 
+    AUTO_RESUME = TRUE;
+
+-- Step 2: Create Database and Schema
+CREATE DATABASE MEDI_ANALYTICS;
+USE DATABASE MEDI_ANALYTICS;
+CREATE SCHEMA PUBLIC;
+USE SCHEMA PUBLIC;
+
+-- Step 3: Create Tables with all columns
+CREATE TABLE chat_logs (
+    user_id STRING,
+    model_used STRING,
+    tokens_used NUMBER,
+    latency_ms NUMBER,
+    timestamp TIMESTAMP,
+    question STRING
+);
+
+CREATE TABLE doc_stats (
+    doc_id STRING,
+    queries_count NUMBER,
+    avg_response_time NUMBER
+);
+
+-- Optional: Create indexes for better query performance
+CREATE INDEX idx_chat_logs_timestamp ON chat_logs(timestamp);
+CREATE INDEX idx_chat_logs_user_id ON chat_logs(user_id);
+CREATE INDEX idx_doc_stats_doc_id ON doc_stats(doc_id);
 
 
 ## ✉️ Contact
